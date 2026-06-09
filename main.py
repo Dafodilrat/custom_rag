@@ -1,17 +1,29 @@
-from tools import load_text_files, pdf_to_text, sentence_based_chunking
+from tools import load_and_vectorize_data
 
-from langchain_community.embeddings import HuggingFaceEmbeddings 
 from langchain_community.vectorstores import Chroma
 from langchain_community.docstore.document import Document
 
-pdf_path = "pdf/"
-text_path = "text/"
+# --- Configuration ---
+PDF_FOLDER = "pdf/"
+TEXT_FOLDER = "text/"
+PERSIST_DIRECTORY = "./chroma_db"
+# ---------------------
 
-pdf_to_text(pdf_folder=pdf_path,output_folder=text_path)
-text = load_text_files(text_path)
-chunks = sentence_based_chunking(text)
+def setup_vector_store():
+    """
+    Initializes the vector store by loading and vectorizing all documents.
+    """
+    vector_store, embeddings = load_and_vectorize_data(
+        pdf_folder=PDF_FOLDER,
+        text_folder=TEXT_FOLDER,
+        persist_directory=PERSIST_DIRECTORY
+    )
+    return vector_store, embeddings
 
-documents = [Document(page_content=chunk["text"], metadata=chunk["metadata"]) for chunk in chunks]
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-vector_store = Chroma.from_documents(documents=documents, embedding=embeddings, persist_directory="./chroma_db")
-print("Chunks stored in ChromaDB.")
+if __name__ == "__main__":
+    print("Starting RAG system setup...")
+    try:
+        vector_store, embeddings = setup_vector_store()
+        print("RAG system setup complete. Vector store is ready.")
+    except Exception as e:
+        print(f"An error occurred during setup: {e}")
