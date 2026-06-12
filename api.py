@@ -1,93 +1,160 @@
-import requests
-from typing import Dict, Any
+from typing import List, Dict, Any
+from chromadb import PersistentClient
+from tools import convert_pdf_to_text
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import os
+import glob
 
-# --- LLM Connection Configuration ---
-# This section is configured to connect to a local LLM endpoint.
-# Ensure the LLM server (like the one running in the Odysseus webui) is running on this host/port.
-LLM_HOST = "localhost:7000"
-LLM_MODEL = "gemma-4-E2B-it-GGUF"
-
-def call_llm(prompt: str) -> str:
+class VectorDBManager:
     """
-    Calls the local LLM endpoint with the given prompt.
+    Manages all interactions with the Chroma vector store, initialized with a specific path.
+    This class handles the setup, ingestion, retrieval, and query augmentation logic.
     """
-    url = f"{LLM_HOST}/generate"  # Assuming the endpoint path for generation is '/generate'
-    payload = {"prompt": prompt}
-
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
+    def __init__(self, db_path: str, workspace_path: str, collection_name: str = "rag_collection"):
+        """
+        Initializes the Chroma client and collection pointing to a local directory.
+        :param db_path: The absolute or relative path to the ChromaDB directory.
+        :param collection_name: The name of the collection to use.
+        """
+        self.db_path = db_path
+        self.collection_name = collection_name
+        self.workspace_path = workspace_path
+        self.last_id = -1
         
-        # Assuming the response structure contains the generated text in a specific key
-        # NOTE: You may need to adjust this parsing based on the actual response format from your server.
-        result = response.json()
-        return result.get("generated_text", "Error: Could not find 'generated_text' in the response.")
+        self.client = self._initialize_client()
         
-    except requests.exceptions.RequestException as e:
-        return f"Error connecting to the LLM at {LLM_HOST}: {e}"
+        self.collection = self.client.get_or_create_collection(self.collection_name)
+     
+        print(f"VectorDBManager initialized. DB path: {self.db_path}, Collection: {self.collection_name}")
+        
+        self._ensure_data_integrity()
 
-
-def augment_query(llm_client, original_query: str, context: str) -> str:
-    """
-    Uses the LLM to rewrite the original query, incorporating retrieved context.
-    """
-    augmentation_prompt = f"""
-    You are an expert query augmentation assistant. Your task is to take an original user query and enrich it by incorporating relevant context provided below. 
-    The goal is to create a new, highly specific search query that is more likely to yield a precise answer from a knowledge base.
-
-    Original User Query: "{original_query}"
-
-    Relevant Context Snippets (use these to refine the query):
-    ---
-    {context}
-    ---
-
-    Please return ONLY the new, augmented search query. Do not include any explanation or preamble.
-    """
+    def _initialize_client(self):
+        """Initializes Chroma client pointing to the specified local directory."""
+        try:
+            # Ensure the directory exists
+            os.makedirs(self.db_path, exist_ok=True)
+            # Initialize PersistentClient pointing to the local path
+            return PersistentClient(path=self.db_path)
+        except Exception as e:
+            print(f"Error initializing ChromaDB client at {self.db_path}: {e}")
+            raise
     
-    print("--- Augmenting Query via LLM ---")
-    augmented_query = call_llm(augmentation_prompt)
-    print(f"Augmented Query: {augmented_query}")
-    return augmented_query
+    def _ensure_data_integrity(self):
+
+        """Checks for new files and updates the vector DB if new documents are found."""
+        
+        new_files_paths = self.get_new_file_paths()
+        
+        if new_files_paths:
+            
+            print(f"Found {len(new_files_paths)} new file(s) to ingest.")
+            
+            self._ingest_new_data(new_files_paths)
+        else:
+            print("No new files found to ingest.")
 
 
-def rag_api(user_query: str) -> Dict[str, Any]:
-    """
-    The main RAG API function that handles the full flow:
-    1. Retrieval from ChromaDB.
-    2. Query Augmentation via LLM.
-    3. Final Answer Generation.
-    """
-    print(f"Received User Query: '{user_query}'")
+    def get_new_file_paths(self) -> List[str]:
+        """
+        Identifies PDF files present on the filesystem that are NOT present in the vector DB metadata.
+        :return: A list of paths to new files that need processing.
+        """
+        # 1. Fetch all source file names stored in ChromaDB metadata
+        response = self.collection.get(include=["metadatas"])
+        
+        db_files = {
+            meta.get("source_file")
+            for meta in response.get("metadatas", [])
+            if meta and "source_file" in meta
+        }
+        
+        self.last_id = len(db_files) - 1 if len(db_files)>0 else 0
+        # 2. Find all PDF files in the local workspace
+        search_pattern = os.path.join(self.workspace_path, "*")
+        current_files = set(glob.glob(search_pattern))
 
-    # 1. Retrieval
-    # In a real setup, you would load your ChromaDB here.
-    # For this example, we simulate retrieval:
-    retrieved_context = f"Context retrieved for query '{user_query}'. This context is based on the documents found in the ChromaDB."
+        # 3. Determine the set of files to ingest (local files not in DB)
+        new_files = current_files - db_files
+
+        return list(new_files)
     
-    # 2. Augmentation
-    augmented_q = augment_query(
-        llm_client=None,  # llm_client is not strictly needed here as call_llm is defined globally
-        original_query=user_query,
-        context=retrieved_context
-    )
+    def _ingest_new_data(self, paths: List[str]):
+        """Reads, chunks, and ingests data from a list of new file paths."""
+        for path in paths:
+            print(f"Ingesting new file: {path}")
+            try:
+                # Read the full text
+                full_text = convert_pdf_to_text(path)
 
-    # 3. Final Answer Generation
-    final_answer = f"Based on the augmented query ('{augmented_q}'), here is the final answer: {retrieved_context}. Please review the augmented query for precision."
+                # Split text into manageable chunks
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=500,
+                    chunk_overlap=50,
+                    length_function=len,
+                    separators=["\n\n", "\n", " ", ""]
+                )
+                text_chunks = text_splitter.create_documents([full_text])
 
-    return {
-        "original_query": user_query,
-        "augmented_query": augmented_q,
-        "context_used": len(retrieved_context),
-        "answer": final_answer
-    }
+                # Prepare metadata for ingestion
+                file_metadata = {"source_file": path}
+                text_metadata = [file_metadata] * len(text_chunks)
+                text_ids = [i for i in range(self.last_id,self.last_id+len(text_chunks))]
 
-if __name__ == '__main__':
-    # Example usage for testing
-    test_query = "What is the capital of France?"
-    result = rag_api(test_query)
-    print("\n--- Final RAG Result ---")
-    print(f"Original Query: {result['original_query']}")
-    print(f"Augmented Query: {result['augmented_query']}")
-    print(f"Context Used: {result['context_used']}")
-    print(f"Final Answer: {result['answer']}")
+                # Ingest into ChromaDB
+                self.collection.upsert(
+                    ids=text_ids,
+                    documents=text_chunks,
+                    metadatas=text_metadata
+                )
+                print(f"Successfully ingested {len(text_chunks)} chunks from {path}.")
+            except Exception as e:
+                print(f"Failed to ingest data from {path}: {e}")
+
+    def retrieve_context(self, query: str, n_results: int = 5) -> List[str]:
+        """Retrieves relevant documents based on a query."""
+        print(f"Retrieving context for query: '{query[:50]}...'")
+        
+        try:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                include=["documents"]
+            )
+            # Extract the text content from the resulting documents    
+
+            return results
+        except Exception as e:
+            print(f"Error during context retrieval: {e}")
+            return []
+
+    
+    def get_augmented_query(self, user_query: str) -> str:
+        """
+        Retrieves relevant context and constructs a context-aware system prompt
+        by augmenting the user query with RAG results.
+        Implements the context-aware-llm-query-augmentation skill.
+        """
+        # 1. Retrieve relevant context
+        context_docs = self.retrieve_context(user_query, n_results=4)
+
+        if not context_docs:
+            print("WARNING: No context retrieved. Proceeding with original query.")
+            context_str = "No relevant context found."
+        else:
+            # Concatenate retrieved documents into a clear context string
+            context_str = "\n---\n".join([f"Document:\n{doc}" for doc in context_docs])
+
+        # 2. Construct the final, augmented prompt
+        system_prompt = f"""
+        You are an expert assistant. Use the following context provided below to answer the user's question accurately.
+        
+        --- CONTEXT ---
+        {context_str}
+        --- END CONTEXT ---
+
+        Based ONLY on the context provided above, answer the following user query:
+        
+        USER QUERY: {user_query}
+        """
+        return system_prompt
