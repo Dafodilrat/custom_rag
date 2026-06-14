@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 from chromadb import PersistentClient
 from tools import convert_pdf_to_text
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 import os
 import glob
 
@@ -23,7 +24,10 @@ class VectorDBManager:
         
         self.client = self._initialize_client()
         
-        self.collection = self.client.get_or_create_collection(self.collection_name)
+        self.collection = self.client.get_or_create_collection(
+            name = self.collection_name,
+            embedding_function=DefaultEmbeddingFunction()
+        )
      
         print(f"VectorDBManager initialized. DB path: {self.db_path}, Collection: {self.collection_name}")
         
@@ -88,18 +92,26 @@ class VectorDBManager:
                 full_text = convert_pdf_to_text(path)
 
                 # Split text into manageable chunks
+
+                file_metadata = {"source_file": path}
+
                 text_splitter = RecursiveCharacterTextSplitter(
                     chunk_size=500,
                     chunk_overlap=50,
                     length_function=len,
                     separators=["\n\n", "\n", " ", ""]
                 )
-                text_chunks = text_splitter.create_documents([full_text])
+                splitted = text_splitter.create_documents([full_text],[file_metadata])
 
-                # Prepare metadata for ingestion
-                file_metadata = {"source_file": path}
-                text_metadata = [file_metadata] * len(text_chunks)
-                text_ids = [i for i in range(self.last_id,self.last_id+len(text_chunks))]
+                text_chunks = [splitted[i].page_content for i in range(len(splitted))]
+
+                text_metadata = [splitted[i].metadata for i in range(len(splitted))]
+
+                text_ids = [str(idx) for idx in range(self.last_id,self.last_id+len(text_chunks))]
+
+                self.last_id = int(text_ids[-1])+1
+
+                assert len(text_metadata) == len(text_ids) == len(text_chunks)
 
                 # Ingest into ChromaDB
                 self.collection.upsert(
@@ -107,14 +119,15 @@ class VectorDBManager:
                     documents=text_chunks,
                     metadatas=text_metadata
                 )
+                
                 print(f"Successfully ingested {len(text_chunks)} chunks from {path}.")
             except Exception as e:
-                print(f"Failed to ingest data from {path}: {e}")
+                print("error", e)
+                ##print(f"Failed to ingest data from {path}: {e}")
 
     def retrieve_context(self, query: str, n_results: int = 5) -> List[str]:
         """Retrieves relevant documents based on a query."""
-        print(f"Retrieving context for query: '{query[:50]}...'")
-        
+
         try:
             results = self.collection.query(
                 query_texts=[query],
@@ -143,7 +156,7 @@ class VectorDBManager:
             context_str = "No relevant context found."
         else:
             # Concatenate retrieved documents into a clear context string
-            context_str = "\n---\n".join([f"Document:\n{doc}" for doc in context_docs])
+            context_str = "\n---\n".join([f"Document:\n{doc}" for doc in context_docs['documents']])
 
         # 2. Construct the final, augmented prompt
         system_prompt = f"""

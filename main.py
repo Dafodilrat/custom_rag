@@ -15,7 +15,7 @@ def call_llm_api(prompt: str) -> str:
     """
     try :
         client = OpenAI(
-            base_url='http://localhost:8001/v1/',
+            base_url='http://localhost:8000/v1/',
             api_key='ollama'  # Value is required but safely ignored locally
         )
     except Exception as e:
@@ -54,9 +54,12 @@ def main():
     # 5. Call the LLM with a modified query (Context-aware flow)
     print("Executing context-aware query augmentation flow...")
 
-    query = "give a summary of image and video computing report?"
+    query = "what is the image and video computing project about?"
     augmented_query = vector_db_manager.get_augmented_query(query)
+
     response = call_llm_api(augmented_query)
+
+    print(response)
 
     print("\n--- Final LLM Response ---")
     print(response)
