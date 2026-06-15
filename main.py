@@ -57,15 +57,13 @@ def main():
     query = "what is the image and video computing project about?"
     augmented_query = vector_db_manager.get_augmented_query(query)
 
-    response = call_llm_api(augmented_query)
+    # response = call_llm_api(augmented_query)
 
-    print(response)
-
-    print("\n--- Final LLM Response ---")
-    print(response)
+    # print("\n--- Final LLM Response ---")
+    # print(response)
 
 
-    print("\n--- RAG Workflow Finished ---")
+    # print("\n--- RAG Workflow Finished ---")
 
 if __name__ == "__main__":
     main()
