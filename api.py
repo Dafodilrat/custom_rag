@@ -10,35 +10,15 @@ from tqdm import tqdm
 import os
 
 class VectorDBManager:
-    """
-    Manages interactions with a Chroma vector store for RAG operations.
-    Handles document ingestion, retrieval, and query augmentation.
-    """
-    
     def __init__(self, db_path: str, workspace_path: str, collection_name: str = "rag_collection", max_workers: int = 4):
-        """
-        Initialize the VectorDBManager with database and workspace paths.
-        
-        Args:
-            db_path: Path to the ChromaDB storage directory
-            workspace_path: Path to the workspace containing PDF documents
-            collection_name: Name of the ChromaDB collection (default: "rag_collection")
-            max_workers: Number of concurrent threads for ingestion (default: 4)
-        """
         self.db_path = str(Path(db_path).resolve())
         self.workspace_path = str(Path(workspace_path).resolve())
         self.collection_name = collection_name
         self.max_workers = max_workers
-        
         self.client: PersistentClient = self._initialize_client()
         self.collection = self.client.get_or_create_collection(
-            name = self.collection_name,
-            embedding_function=DefaultEmbeddingFunction()
+            name=self.collection_name, embedding_function=DefaultEmbeddingFunction()
         )
-        
-        # Track state
-        self._last_processed_file_count: int = 0
-        
         print(f"VectorDBManager initialized at {self.db_path} for {self.collection_name}")
         self._sync_with_workspace()
 
@@ -51,12 +31,8 @@ class VectorDBManager:
     def _ingest_file(self, path: str) -> bool:
         """Ingest a single file. Returns True on success, False on failure."""
         try:
-            # Read the full text
             full_text = convert_pdf_to_text(path)
-
-            # Split text into manageable chunks
             file_metadata = {"source_file": path}
-
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=500,
                 chunk_overlap=50,
@@ -64,29 +40,18 @@ class VectorDBManager:
                 separators=["\n\n", "\n", " ", ""]
             )
             splitted = text_splitter.create_documents([full_text], [file_metadata])
-
             text_chunks = [splitted[i].page_content for i in range(len(splitted))]
-
-            # Generate IDs using full file path and chunk number
             text_ids = [f"{path}_chunk_{i}" for i in range(1, len(text_chunks) + 1)]
-
-            # Update metadata to include chunk index
-            updated_text_metadata = []
+            updated_text_metadata = [splitted[i].metadata.copy() for i in range(len(splitted))]
             for i in range(len(splitted)):
-                meta = splitted[i].metadata.copy()
-                meta["chunk_index"] = i
-                updated_text_metadata.append(meta)
-
+                updated_text_metadata[i]["chunk_index"] = i
             assert len(updated_text_metadata) == len(text_ids) == len(text_chunks)
-
-            # Ingest into ChromaDB
             self.collection.upsert(
                 ids=text_ids,
                 documents=text_chunks,
                 metadatas=updated_text_metadata
             )
             return True
-        
         except Exception as e:
             print(f"❌ Error processing {path}: {e}")
             return False
