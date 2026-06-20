@@ -4,6 +4,7 @@ langchain-community>=0.0.1
 sentence-transformers>=2.2.2
 chromadb
 pypdf
+tiktok
 
 # For local LLM inference (optional)
 llama-cpp-python # For running local models like llama-2-7b.gguf
@@ -30,3 +31,8 @@ requests
 # For advanced RAG (optional)
 rank-bm25  # For BM25 retrieval
 unstructured  # For advanced document parsing
+
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
